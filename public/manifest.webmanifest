@@ -1,0 +1,9 @@
+{
+  "name": "Mealplan",
+  "short_name": "Mealplan",
+  "start_url": "/Mealplan/",
+  "display": "standalone",
+  "background_color": "#fffaf3",
+  "theme_color": "#fffaf3",
+  "icons": []
+}
