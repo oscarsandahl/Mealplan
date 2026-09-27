@@ -37,7 +37,20 @@ function App() {
   const [refresh, setRefresh] = useState(0);
 
   async function loadRecipes() {
-    setRecipes(await db.recipes.orderBy("name").toArray());
+    let saved = await db.recipes.orderBy("name").toArray();
+    if (!saved.length) {
+      try {
+        const legacy = JSON.parse(localStorage.getItem("mealplan-recipes") || "[]") as Array<Omit<Recipe, "createdAt"> & { createdAt?: string }>;
+        if (legacy.length) {
+          saved = legacy.map((recipe) => ({ ...recipe, createdAt: recipe.createdAt ?? new Date().toISOString() }));
+          await db.recipes.bulkPut(saved);
+          localStorage.removeItem("mealplan-recipes");
+        }
+      } catch {
+        // Ignore invalid legacy data.
+      }
+    }
+    setRecipes(saved);
   }
 
   useEffect(() => { void loadRecipes(); }, [refresh]);
