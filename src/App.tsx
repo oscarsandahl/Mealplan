@@ -35,6 +35,7 @@ function App() {
   const [editing, setEditing] = useState<Recipe | null>(null);
   const [search, setSearch] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
 
   async function loadRecipes() {
     let saved = await db.recipes.orderBy("name").toArray();
@@ -173,14 +174,15 @@ function App() {
           ) : (
             <div className="recipe-list">
               {filtered.map((recipe) => (
-                <article className="recipe-card" key={recipe.id}>
+                <article className="recipe-card" key={recipe.id} role="button" tabIndex={0} onClick={() => setSelectedRecipe(recipe)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setSelectedRecipe(recipe); }}>
                   <div className="recipe-main">
                     <h2>{recipe.name}</h2>
+                    <span className="recipe-open">Tap to open</span>
                     <p>{recipe.protein} · {recipe.cookTime} min</p>
                   </div>
                   <div className="recipe-actions">
-                    <button className="text-button" onClick={() => { setEditing(recipe); setShowForm(true); }}>Edit</button>
-                    <button className="text-button danger" onClick={() => void deleteRecipe(recipe)}>Delete</button>
+                    <button className="text-button" onClick={(e) => { e.stopPropagation(); setEditing(recipe); setShowForm(true); }}>Edit</button>
+                    <button className="text-button danger" onClick={(e) => { e.stopPropagation(); void deleteRecipe(recipe); }}>Delete</button>
                   </div>
                 </article>
               ))}
@@ -189,6 +191,36 @@ function App() {
         </main>
       ) : <Week recipes={recipes} />}
       
+      {selectedRecipe && (
+        <div className="modal-backdrop" onClick={() => setSelectedRecipe(null)}>
+          <section className="recipe-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">RECIPE</p>
+                <h2>{selectedRecipe.name}</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setSelectedRecipe(null)}>×</button>
+            </div>
+            <div className="recipe-meta">
+              <span>{selectedRecipe.protein}</span>
+              <span>{selectedRecipe.cookTime} min</span>
+            </div>
+            <section className="detail-section">
+              <h3>Ingredients</h3>
+              <div className="recipe-text">{selectedRecipe.ingredients}</div>
+            </section>
+            <section className="detail-section">
+              <h3>Instructions</h3>
+              <div className="recipe-text">{selectedRecipe.instructions}</div>
+            </section>
+            <div className="detail-actions">
+              <button className="secondary" onClick={() => { setEditing(selectedRecipe); setSelectedRecipe(null); setShowForm(true); }}>Edit recipe</button>
+              <button className="primary large" onClick={() => setSelectedRecipe(null)}>Done</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {showForm && (
         <div className="modal-backdrop" onClick={() => setShowForm(false)}>
           <form className="modal" onSubmit={saveRecipe} onClick={(e) => e.stopPropagation()}>
