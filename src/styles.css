@@ -41,3 +41,17 @@ textarea { min-height:100px; resize:vertical; }
 .text-button { border:0; background:transparent; font-size:22px; }
 .full { margin-top:2px; }
 @media (max-width:480px) { header { align-items:flex-start; } header .primary { white-space:nowrap; } .menu-day { grid-template-columns:65px 1fr 30px; } }
+
+.secondary { border:1px solid #dfd3c7; border-radius:12px; padding:10px 13px; background:white; color:#2d2925; font-weight:700; }
+.backup-bar { display:flex; gap:8px; margin:0 0 14px; }
+.file-button { cursor:pointer; display:inline-flex; align-items:center; }
+.file-button input { display:none; }
+.recipe-main { min-width:0; }
+.recipe-actions { display:flex; gap:10px; margin-top:10px; }
+.danger { color:#a34a3f; font-size:14px; }
+.muted { color:#8b7d70; margin:6px 0 0; font-size:13px; line-height:1.4; }
+.menu-actions { display:flex; justify-content:flex-end; align-items:center; gap:2px; }
+.menu-actions .text-button { font-size:13px; white-space:nowrap; }
+.menu-actions .text-button:last-child { font-size:22px; }
+.cooked { color:#3d7650; font-weight:700; }
+@media (max-width:480px) { .backup-bar { flex-direction:column; } .recipe-actions { justify-content:flex-end; } .menu-actions .text-button { font-size:12px; } }
