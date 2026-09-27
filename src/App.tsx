@@ -1,61 +1,127 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-
-type Protein =
-  | "Chicken" | "Beef" | "Pork" | "Fish" | "Seafood"
-  | "Vegetarian" | "Vegan" | "Eggs" | "Other";
-
-type Recipe = {
-  id: string;
-  name: string;
-  ingredients: string;
-  instructions: string;
-  cookTime: number;
-  protein: Protein;
-  photo?: string;
-};
+import { db, type Protein, type Recipe } from "./db";
 
 const proteins: Protein[] = [
   "Chicken", "Beef", "Pork", "Fish", "Seafood",
   "Vegetarian", "Vegan", "Eggs", "Other",
 ];
 
-const starterRecipes: Recipe[] = [];
+type View = "recipes" | "week";
+
+function startOfWeek(date = new Date()) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function weekKey(date = new Date()) {
+  return startOfWeek(date).toISOString().slice(0, 10);
+}
+
+function previousWeekKey() {
+  const d = startOfWeek();
+  d.setDate(d.getDate() - 7);
+  return d.toISOString().slice(0, 10);
+}
 
 function App() {
-  const [recipes, setRecipes] = useState<Recipe[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("mealplan-recipes") || "[]");
-    } catch {
-      return starterRecipes;
-    }
-  });
-  const [view, setView] = useState<"recipes" | "week">("recipes");
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [view, setView] = useState<View>("recipes");
   const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<Recipe | null>(null);
   const [search, setSearch] = useState("");
+  const [refresh, setRefresh] = useState(0);
 
-  useEffect(() => {
-    localStorage.setItem("mealplan-recipes", JSON.stringify(recipes));
-  }, [recipes]);
+  async function loadRecipes() {
+    setRecipes(await db.recipes.orderBy("name").toArray());
+  }
 
-  const filtered = recipes.filter((recipe) =>
-    recipe.name.toLowerCase().includes(search.toLowerCase()),
+  useEffect(() => { void loadRecipes(); }, [refresh]);
+
+  const filtered = useMemo(
+    () => recipes.filter((recipe) =>
+      recipe.name.toLowerCase().includes(search.toLowerCase()),
+    ),
+    [recipes, search],
   );
 
-  function saveRecipe(event: FormEvent<HTMLFormElement>) {
+  async function saveRecipe(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const recipe: Recipe = {
-      id: crypto.randomUUID(),
-      name: String(form.get("name") || ""),
-      ingredients: String(form.get("ingredients") || ""),
-      instructions: String(form.get("instructions") || ""),
+      id: editing?.id ?? crypto.randomUUID(),
+      name: String(form.get("name") || "").trim(),
+      ingredients: String(form.get("ingredients") || "").trim(),
+      instructions: String(form.get("instructions") || "").trim(),
       cookTime: Number(form.get("cookTime") || 0),
       protein: String(form.get("protein") || "Other") as Protein,
+      createdAt: editing?.createdAt ?? new Date().toISOString(),
     };
-    setRecipes((current) => [...current, recipe]);
+    await db.recipes.put(recipe);
+    setEditing(null);
     setShowForm(false);
-    event.currentTarget.reset();
+    setRefresh((n) => n + 1);
+  }
+
+  async function deleteRecipe(recipe: Recipe) {
+    if (!window.confirm(`Delete “${recipe.name}”? This cannot be undone.`)) return;
+    await db.transaction("rw", db.recipes, db.cooked, db.menus, async () => {
+      await db.recipes.delete(recipe.id);
+      await db.cooked.where("recipeId").equals(recipe.id).delete();
+      const menus = await db.menus.toArray();
+      for (const menu of menus) {
+        const recipeIds = menu.recipeIds.filter((id) => id !== recipe.id);
+        await db.menus.put({ ...menu, recipeIds });
+      }
+    });
+    setRefresh((n) => n + 1);
+  }
+
+  async function exportBackup() {
+    const data = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      recipes: await db.recipes.toArray(),
+      cooked: await db.cooked.toArray(),
+      menus: await db.menus.toArray(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mealplan-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importBackup(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (!Array.isArray(data.recipes) || !Array.isArray(data.cooked) || !Array.isArray(data.menus)) {
+        throw new Error("Invalid backup");
+      }
+      if (!window.confirm("Replace your current recipes and history with this backup?")) return;
+      await db.transaction("rw", db.recipes, db.cooked, db.menus, async () => {
+        await db.recipes.clear();
+        await db.cooked.clear();
+        await db.menus.clear();
+        await db.recipes.bulkPut(data.recipes);
+        await db.cooked.bulkPut(data.cooked);
+        await db.menus.bulkPut(data.menus);
+      });
+      setRefresh((n) => n + 1);
+      alert("Backup restored.");
+    } catch {
+      alert("That file is not a valid Mealplan backup.");
+    } finally {
+      event.target.value = "";
+    }
   }
 
   return (
@@ -65,7 +131,7 @@ function App() {
           <p className="eyebrow">YOUR KITCHEN</p>
           <h1>Mealplan</h1>
         </div>
-        <button className="primary" onClick={() => setShowForm(true)}>+ Add recipe</button>
+        <button className="primary" onClick={() => { setEditing(null); setShowForm(true); }}>+ Add recipe</button>
       </header>
 
       <nav className="tabs">
@@ -75,52 +141,54 @@ function App() {
 
       {view === "recipes" ? (
         <main>
-          <input
-            className="search"
-            placeholder="Search recipes…"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
+          <input className="search" placeholder="Search recipes…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <section className="backup-bar">
+            <button className="secondary" onClick={exportBackup}>Export backup</button>
+            <label className="secondary file-button">
+              Import backup
+              <input type="file" accept=".json,application/json" onChange={importBackup} />
+            </label>
+          </section>
 
           {filtered.length === 0 ? (
             <section className="empty">
               <div className="empty-icon">🍽️</div>
-              <h2>No recipes yet</h2>
-              <p>Add your first recipe and we'll build your menu from it.</p>
-              <button className="primary large" onClick={() => setShowForm(true)}>Add your first recipe</button>
+              <h2>{recipes.length ? "No matches" : "No recipes yet"}</h2>
+              <p>{recipes.length ? "Try a different search." : "Add your first recipe and we'll build your menu from it."}</p>
+              {!recipes.length && <button className="primary large" onClick={() => setShowForm(true)}>Add your first recipe</button>}
             </section>
           ) : (
             <div className="recipe-list">
               {filtered.map((recipe) => (
                 <article className="recipe-card" key={recipe.id}>
-                  <div>
+                  <div className="recipe-main">
                     <h2>{recipe.name}</h2>
                     <p>{recipe.protein} · {recipe.cookTime} min</p>
+                  </div>
+                  <div className="recipe-actions">
+                    <button className="text-button" onClick={() => { setEditing(recipe); setShowForm(true); }}>Edit</button>
+                    <button className="text-button danger" onClick={() => void deleteRecipe(recipe)}>Delete</button>
                   </div>
                 </article>
               ))}
             </div>
           )}
         </main>
-      ) : (
-        <Week recipes={recipes} />
-      )}
-
+      ) : <Week recipes={recipes} />}
+      
       {showForm && (
         <div className="modal-backdrop" onClick={() => setShowForm(false)}>
-          <form className="modal" onSubmit={saveRecipe} onClick={(event) => event.stopPropagation()}>
+          <form className="modal" onSubmit={saveRecipe} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>New recipe</h2>
+              <h2>{editing ? "Edit recipe" : "New recipe"}</h2>
               <button type="button" className="icon-button" onClick={() => setShowForm(false)}>×</button>
             </div>
-
-            <label>Name<input name="name" required placeholder="e.g. Chicken curry" /></label>
-            <label>Protein<select name="protein" defaultValue="Chicken">{proteins.map((protein) => <option key={protein}>{protein}</option>)}</select></label>
-            <label>Cook time (minutes)<input name="cookTime" type="number" min="0" inputMode="numeric" placeholder="30" /></label>
-            <label>Ingredients<textarea name="ingredients" required placeholder={"2 chicken breasts\n1 onion\n…"} /></label>
-            <label>Instructions<textarea name="instructions" required placeholder="How do you make it?" /></label>
-
-            <button className="primary large" type="submit">Save recipe</button>
+            <label>Name<input name="name" required defaultValue={editing?.name} placeholder="e.g. Chicken curry" /></label>
+            <label>Protein<select name="protein" defaultValue={editing?.protein ?? "Chicken"}>{proteins.map((protein) => <option key={protein}>{protein}</option>)}</select></label>
+            <label>Cook time (minutes)<input name="cookTime" type="number" min="0" inputMode="numeric" defaultValue={editing?.cookTime || ""} placeholder="30" /></label>
+            <label>Ingredients<textarea name="ingredients" required defaultValue={editing?.ingredients} placeholder={"2 chicken breasts\n1 onion\n…"} /></label>
+            <label>Instructions<textarea name="instructions" required defaultValue={editing?.instructions} placeholder="How do you make it?" /></label>
+            <button className="primary large" type="submit">{editing ? "Save changes" : "Save recipe"}</button>
           </form>
         </div>
       )}
@@ -131,60 +199,97 @@ function App() {
 function Week({ recipes }: { recipes: Recipe[] }) {
   const [dinners, setDinners] = useState(7);
   const [menu, setMenu] = useState<Recipe[]>([]);
+  const [cookedIds, setCookedIds] = useState<Set<string>>(new Set());
+  const [loaded, setLoaded] = useState(false);
 
-  function generate() {
-    const available = [...recipes].sort(() => Math.random() - 0.5);
+  async function loadWeek() {
+    const saved = await db.menus.get(weekKey());
+    const savedRecipes = saved ? saved.recipeIds.map((id) => recipes.find((r) => r.id === id)).filter(Boolean) as Recipe[] : [];
+    setMenu(savedRecipes);
+    const cooked = await db.cooked.where("cookedOn").startsWith(weekKey()).toArray();
+    setCookedIds(new Set(cooked.map((item) => item.recipeId)));
+    setLoaded(true);
+  }
+
+  useEffect(() => { if (recipes.length || !loaded) void loadWeek(); }, [recipes, loaded]);
+
+  async function generate() {
+    if (!recipes.length) return;
+    const previous = await db.menus.get(previousWeekKey());
+    const previousIds = new Set(previous?.recipeIds ?? []);
+    const previousCooked = await db.cooked.toArray();
+    for (const record of previousCooked) {
+      if (record.cookedOn.startsWith(previousWeekKey())) previousIds.add(record.recipeId);
+    }
+
+    const shuffled = [...recipes].sort(() => Math.random() - 0.5);
+    const preferred = shuffled.filter((r) => !previousIds.has(r.id));
+    const pool = preferred.length >= dinners ? preferred : shuffled;
     const chosen: Recipe[] = [];
-    const proteinsUsed = new Set<Protein>();
+    const usedProteins = new Set<Protein>();
 
-    for (const recipe of available) {
+    for (const recipe of pool) {
       if (chosen.length >= dinners) break;
-      if (!proteinsUsed.has(recipe.protein) || chosen.length >= available.length - 1) {
+      if (!usedProteins.has(recipe.protein)) {
         chosen.push(recipe);
-        proteinsUsed.add(recipe.protein);
+        usedProteins.add(recipe.protein);
       }
+    }
+    for (const recipe of pool) {
+      if (chosen.length >= dinners) break;
+      if (!chosen.some((r) => r.id === recipe.id)) chosen.push(recipe);
     }
 
-    if (chosen.length < dinners) {
-      for (const recipe of available) {
-        if (chosen.length >= dinners) break;
-        if (!chosen.some((item) => item.id === recipe.id)) chosen.push(recipe);
-      }
-    }
+    await db.menus.put({ weekKey: weekKey(), recipeIds: chosen.map((r) => r.id) });
     setMenu(chosen);
+    setCookedIds(new Set((await db.cooked.where("cookedOn").startsWith(weekKey()).toArray()).map((r) => r.recipeId)));
+  }
+
+  async function regenerateDay(index: number) {
+    const used = new Set(menu.filter((_, i) => i !== index).map((r) => r.id));
+    const previous = await db.menus.get(previousWeekKey());
+    const previousIds = new Set(previous?.recipeIds ?? []);
+    const candidates = recipes.filter((r) => !used.has(r.id) && !previousIds.has(r.id));
+    const fallback = recipes.filter((r) => !used.has(r.id));
+    const pool = candidates.length ? candidates : fallback;
+    if (!pool.length) return;
+    const current = menu[index];
+    const sameProtein = pool.filter((r) => r.protein !== current?.protein);
+    const choice = (sameProtein.length ? sameProtein : pool)[Math.floor(Math.random() * (sameProtein.length ? sameProtein.length : pool.length))];
+    const next = [...menu];
+    next[index] = choice;
+    await db.menus.put({ weekKey: weekKey(), recipeIds: next.map((r) => r.id) });
+    setMenu(next);
+  }
+
+  async function markCooked(recipe: Recipe) {
+    const already = await db.cooked.where("recipeId").equals(recipe.id).and((r) => r.cookedOn.startsWith(weekKey())).first();
+    if (!already) await db.cooked.add({ recipeId: recipe.id, cookedOn: new Date().toISOString() });
+    setCookedIds((current) => new Set(current).add(recipe.id));
   }
 
   return (
     <main>
       <section className="week-controls">
-        <div>
-          <p className="eyebrow">MENU</p>
-          <h2>Generate your week</h2>
-        </div>
-        <label>Dinners<select value={dinners} onChange={(event) => setDinners(Number(event.target.value))}>
-          {[1,2,3,4,5,6,7].map((n) => <option key={n} value={n}>{n}</option>)}
-        </select></label>
+        <div><p className="eyebrow">MENU</p><h2>This week</h2><p className="muted">Recipes cooked last week are kept out of the next menu.</p></div>
+        <label>Dinners<select value={dinners} onChange={(e) => setDinners(Number(e.target.value))}>{[1,2,3,4,5,6,7].map((n) => <option key={n} value={n}>{n}</option>)}</select></label>
       </section>
 
       {recipes.length === 0 ? (
-        <section className="empty compact">
-          <div className="empty-icon">🗓️</div>
-          <h2>Add recipes first</h2>
-          <p>Your weekly menu will be generated from your saved recipes.</p>
-        </section>
+        <section className="empty compact"><div className="empty-icon">🗓️</div><h2>Add recipes first</h2><p>Your weekly menu will be generated from your saved recipes.</p></section>
       ) : (
         <>
-          <button className="primary large full" onClick={generate}>Generate menu</button>
+          <button className="primary large full" onClick={() => void generate()}>Generate menu</button>
           {menu.length > 0 && (
             <div className="menu-list">
               {menu.map((recipe, index) => (
-                <article className="menu-day" key={recipe.id}>
+                <article className="menu-day" key={`${recipe.id}-${index}`}>
                   <span className="day">Dinner {index + 1}</span>
-                  <div>
-                    <strong>{recipe.name}</strong>
-                    <span>{recipe.protein} · {recipe.cookTime} min</span>
+                  <div className="menu-recipe"><strong>{recipe.name}</strong><span>{recipe.protein} · {recipe.cookTime} min</span></div>
+                  <div className="menu-actions">
+                    <button className={cookedIds.has(recipe.id) ? "text-button cooked" : "text-button"} onClick={() => void markCooked(recipe)}>{cookedIds.has(recipe.id) ? "✓ Cooked" : "Mark cooked"}</button>
+                    <button className="text-button" aria-label={`Regenerate dinner ${index + 1}`} onClick={() => void regenerateDay(index)}>↻</button>
                   </div>
-                  <button className="text-button" onClick={generate}>↻</button>
                 </article>
               ))}
             </div>
